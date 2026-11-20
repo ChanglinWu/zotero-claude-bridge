@@ -412,29 +412,51 @@ Zotero.ClaudeBridge = new function () {
   }
 
   async function findExisting(libraryID, ident) {
+    // DOIs are case-insensitive, but the search's "is" operator is not: search with
+    // "contains" (case-insensitive) and then require an exact case-insensitive match.
+    const sameDOI = (want) => (i) => field(i, "DOI").trim().toLowerCase() === want.toLowerCase();
     const tries = [];
-    if (ident.DOI) tries.push(["DOI", "is", ident.DOI]);
+    if (ident.DOI) tries.push(["DOI", "contains", ident.DOI, sameDOI(ident.DOI)]);
     if (ident.arXiv) {
-      tries.push(["DOI", "is", "10.48550/arXiv." + ident.arXiv]);
+      const arxivDOI = "10.48550/arXiv." + ident.arXiv;
+      tries.push(["DOI", "contains", arxivDOI, sameDOI(arxivDOI)]);
       tries.push(["url", "contains", "arxiv.org/abs/" + ident.arXiv]);
       tries.push(["extra", "contains", "arXiv:" + ident.arXiv]);
     }
     if (ident.ISBN) tries.push(["ISBN", "contains", ident.ISBN]);
     if (ident.PMID) tries.push(["extra", "contains", "PMID: " + ident.PMID]);
-    for (const [f, op, v] of tries) {
+    for (const [f, op, v, check] of tries) {
       const s = new Zotero.Search();
       s.libraryID = libraryID;
       s.addCondition(f, op, v);
       s.addCondition("deleted", "false");
       try {
         const ids = await s.search();
-        const items = toTopLevel(await Zotero.Items.getAsync(ids)).filter((i) => i.isRegularItem());
+        let items = toTopLevel(await Zotero.Items.getAsync(ids)).filter((i) => i.isRegularItem());
+        if (check) items = items.filter(check);
         if (items.length) return items[0];
       } catch (e) {
         // unsupported field condition on this Zotero version - skip
       }
     }
     return null;
+  }
+
+  // Other items with the same title (and year, if both have one): likely duplicates that
+  // the identifier check could not catch, e.g. an older copy saved without a DOI.
+  async function sameTitleItems(item) {
+    const norm = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const title = norm(field(item, "title"));
+    if (title.length < 12) return [];
+    const s = new Zotero.Search();
+    s.libraryID = item.libraryID;
+    s.addCondition("title", "contains", field(item, "title").slice(0, 60));
+    s.addCondition("deleted", "false");
+    const y = year(item);
+    return toTopLevel(await Zotero.Items.getAsync(await s.search()))
+      .filter((i) => i.id !== item.id && i.isRegularItem() && norm(field(i, "title")) === title &&
+        (!y || !year(i) || year(i) === y))
+      .map((i) => i.key);
   }
 
   function hasFileAttachment(item) {
@@ -1077,6 +1099,13 @@ Zotero.ClaudeBridge = new function () {
             await addTags(item, a.tags);
             await item.saveTx();
             const r = { identifier: label, status, ...summarize(item) };
+            if (status === "added") {
+              const dups = await sameTitleItems(item);
+              if (dups.length) {
+                r.possibleDuplicates = dups;
+                r.note = "Items with the same title were already in the library; the user can merge them in Zotero's Duplicate Items view.";
+              }
+            }
             if (col) r.collection = collectionPath(col);
             if (a.attach_pdf !== false) r.pdf = await tryAttachPDF(item);
             results.push(r);
@@ -1143,6 +1172,8 @@ Zotero.ClaudeBridge = new function () {
         const r = { status: "added", ...summarize(item) };
         if (col) r.collection = collectionPath(col);
         if (skipped.length) r.skippedFields = skipped;
+        const dups = await sameTitleItems(item);
+        if (dups.length) r.possibleDuplicates = dups;
         return r;
       },
     },

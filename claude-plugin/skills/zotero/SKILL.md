@@ -61,7 +61,8 @@ Zotero must be running with the **Claude Bridge for Zotero** plugin. Check with
      (CLAUDE.md or memory) if any; otherwise `Claude Inbox`.
    - tags: the user's tags, if any.
 4. **Report** a table: title · status (added / already in library / failed) · key · PDF found? ·
-   collection. For failures, say why and offer `add_item`. Offer `select_in_zotero` for the first item.
+   collection. If a result lists `possibleDuplicates`, say so and suggest merging them in Zotero's
+   *Duplicate Items* view. For failures, say why and offer `add_item`. Offer `select_in_zotero` for the first item.
 
 ## sort — organise the library
 

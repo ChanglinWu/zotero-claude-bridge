@@ -7,7 +7,8 @@ function log(msg) {
 
 async function startup({ id, version, rootURI }) {
   await Zotero.initializationPromise;
-  Services.scriptloader.loadSubScript(rootURI + "src/bridge.js");
+  // ignoreCache: otherwise an upgraded plugin keeps running the previous version's cached script
+  Services.scriptloader.loadSubScriptWithOptions(rootURI + "src/bridge.js", { ignoreCache: true });
   ClaudeBridge = Zotero.ClaudeBridge;
   ClaudeBridge.init({ id, version, rootURI });
   log("started " + version);
