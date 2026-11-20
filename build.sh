@@ -1,0 +1,26 @@
+#!/bin/sh
+# Build the Zotero plugin (.xpi) into dist/
+set -e
+cd "$(dirname "$0")"
+VERSION=$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])")
+mkdir -p dist
+OUT="dist/zotero-claude-bridge-$VERSION.xpi"
+rm -f "$OUT"
+zip -q -X -r "$OUT" manifest.json bootstrap.js prefs.js icon.svg src LICENSE
+echo "Built $OUT"
+# updates.json lets Zotero auto-update the plugin from GitHub Releases
+cat > dist/updates.json <<JSON
+{
+  "addons": {
+    "claude-bridge@zotero-claude-bridge": {
+      "updates": [
+        {
+          "version": "$VERSION",
+          "update_link": "https://github.com/ChanglinWu/zotero-claude-bridge/releases/download/v$VERSION/zotero-claude-bridge-$VERSION.xpi",
+          "applications": { "zotero": { "strict_min_version": "6.999" } }
+        }
+      ]
+    }
+  }
+}
+JSON
