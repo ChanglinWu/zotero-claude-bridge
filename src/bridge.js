@@ -130,7 +130,9 @@ Zotero.ClaudeBridge = new function () {
               "get_fulltext to read it. To save a paper, prefer add_by_identifier with a DOI, " +
               "arXiv ID, ISBN or PMID (Zotero fetches the full metadata and open-access PDF " +
               "itself); fall back to add_item only when no identifier exists. Pass a collection " +
-              "name to file it. Item keys are 8-character IDs like 'ABCD2345'.",
+              "name to file it. To work with many papers or long texts, export_markdown them to a local " +
+              "folder and read the files instead of calling get_fulltext repeatedly. Nothing is ever deleted. " +
+              "Item keys are 8-character IDs like 'ABCD2345'.",
           });
         }
         case "ping":
@@ -550,6 +552,123 @@ Zotero.ClaudeBridge = new function () {
     return "";
   }
 
+  // IOUtils/PathUtils are globals in chrome windows; fall back to the main window's copies
+  function io() {
+    return typeof IOUtils !== "undefined" ? IOUtils : Zotero.getMainWindow().IOUtils;
+  }
+  function pu() {
+    return typeof PathUtils !== "undefined" ? PathUtils : Zotero.getMainWindow().PathUtils;
+  }
+
+  function markdownFileName(item) {
+    const first = item.getCreatorsJSON()[0];
+    const author = first ? (first.lastName || first.name || "") : "";
+    const title = (field(item, "shortTitle") || field(item, "title") || (item.isNote() ? item.getNoteTitle() : "") || "untitled")
+      .split(/\s+/).slice(0, 6).join(" ");
+    const slug = `${author}${year(item)} ${title}`
+      .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+    return `${slug || "item"}_${item.key}.md`;
+  }
+
+  const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+
+  async function itemToMarkdown(item, { fulltext, maxChars, assetsDir }) {
+    const y = (v) => JSON.stringify(v == null ? "" : String(v));
+    const title = item.isNote() ? item.getNoteTitle() : field(item, "title");
+    const collections = item.getCollections().map((id) => collectionPath(Zotero.Collections.get(id)));
+    const tags = item.getTags().map((t) => t.tag);
+    const fm = [
+      "---",
+      `zotero_key: ${y(item.key)}`,
+      `title: ${y(title)}`,
+      `item_type: ${y(item.itemType)}`,
+      `authors: [${creatorNames(item, 1000).map(y).join(", ")}]`,
+      `year: ${y(year(item))}`,
+    ];
+    for (const f of ["publicationTitle", "proceedingsTitle", "bookTitle", "publisher", "DOI", "ISBN", "url"]) {
+      const v = field(item, f);
+      if (v) fm.push(`${f}: ${y(v)}`);
+    }
+    fm.push(`collections: [${collections.map(y).join(", ")}]`);
+    fm.push(`tags: [${tags.map(y).join(", ")}]`);
+    fm.push(`zotero_link: ${y(selectURI(item))}`);
+    fm.push("---", "");
+    const out = [fm.join("\n"), `# ${title || item.key}`, ""];
+    out.push(`**Authors:** ${creatorNames(item, 1000).join("; ") || "—"}  `);
+    const pub = field(item, "publicationTitle") || field(item, "proceedingsTitle") || field(item, "bookTitle");
+    out.push(`**Published:** ${[pub, year(item)].filter(Boolean).join(", ") || "—"}  `);
+    if (field(item, "DOI")) out.push(`**DOI:** https://doi.org/${field(item, "DOI")}  `);
+    out.push(`**Zotero:** ${selectURI(item)}`, "");
+
+    if (item.isNote()) {
+      out.push(htmlToText(item.getNote()));
+      return { text: out.join("\n") + "\n", hasFullText: false, images: 0 };
+    }
+    const abs = field(item, "abstractNote");
+    if (abs) out.push("## Abstract", "", abs, "");
+
+    const notes = item.isRegularItem() ? item.getNotes().map((id) => Zotero.Items.get(id)) : [];
+    if (notes.length) {
+      out.push("## Notes", "");
+      for (const n of notes) out.push(htmlToText(n.getNote()), "", "---", "");
+    }
+
+    const atts = item.isAttachment() ? [item]
+      : item.getAttachments().map((id) => Zotero.Items.get(id)).filter((x) => x && !x.deleted);
+    const ann = [];
+    for (const att of atts) {
+      if (!att.isFileAttachment() || !att.getAnnotations) continue;
+      for (const an of att.getAnnotations()) {
+        const line = [
+          `- p.${an.annotationPageLabel || "?"} (${an.annotationType})`,
+          an.annotationText ? ` “${an.annotationText.replace(/\s+/g, " ")}”` : "",
+          an.annotationComment ? ` — ${an.annotationComment.replace(/\s+/g, " ")}` : "",
+        ].join("");
+        ann.push(line);
+      }
+    }
+    if (ann.length) out.push("## Annotations", "", ...ann, "");
+
+    let images = 0;
+    const imgLines = [];
+    for (const att of atts) {
+      if (!att.isFileAttachment() || !IMAGE_TYPES.includes(att.attachmentContentType)) continue;
+      const src = await att.getFilePathAsync();
+      if (!src) continue;
+      await io().makeDirectory(assetsDir, { createAncestors: true, ignoreExisting: true });
+      const name = `${att.key}_${pu().filename(src)}`;
+      const dest = pu().join(assetsDir, name);
+      await io().copy(src, dest);
+      imgLines.push(`![${att.getField("title") || name}](assets/${encodeURI(name)})`, `Local file: ${dest}`, "");
+      images++;
+    }
+    if (imgLines.length) out.push("## Images", "", ...imgLines);
+
+    const links = atts.filter((att) => !att.isFileAttachment() && att.getField("url"));
+    if (links.length) {
+      out.push("## Links", "", ...links.map((l) => `- [${l.getField("title") || "link"}](${l.getField("url")})`), "");
+    }
+
+    let hasFullText = false;
+    if (fulltext) {
+      let budget = maxChars;
+      for (const att of atts) {
+        if (budget <= 0) break;
+        const t = await attachmentText(att, true);
+        if (!t || !t.trim()) continue;
+        hasFullText = true;
+        const chunk = t.length > budget ? t.slice(0, budget) + "\n…[truncated]" : t;
+        budget -= chunk.length;
+        const path = await att.getFilePathAsync();
+        out.push(`## Full text: ${att.getField("title")} (${att.attachmentContentType})`, "");
+        if (path) out.push(`Source file: ${path}`, "");
+        out.push(chunk, "");
+      }
+    }
+    return { text: out.join("\n") + "\n", hasFullText, images };
+  }
+
   // ---------------------------------------------------------------------------
   // Tools
   // ---------------------------------------------------------------------------
@@ -582,7 +701,9 @@ Zotero.ClaudeBridge = new function () {
           collection: { type: "string", description: "Collection key, name or path to search within" },
           tag: { type: "string" },
           item_type: { type: "string", description: "e.g. journalArticle, book, preprint, conferencePaper, thesis" },
+          unfiled: { type: "boolean", description: "Only items that are in no collection" },
           limit: { type: "integer", default: 25 },
+          offset: { type: "integer", default: 0 },
           ...LIB,
         },
       },
@@ -600,7 +721,8 @@ Zotero.ClaudeBridge = new function () {
         }
         if (a.tag) s.addCondition("tag", "is", a.tag);
         if (a.item_type) s.addCondition("itemType", "is", a.item_type);
-        if (!a.query && !a.collection && !a.tag && !a.item_type) {
+        if (a.unfiled) s.addCondition("unfiled", "true");
+        if (!a.query && !a.collection && !a.tag && !a.item_type && !a.unfiled) {
           throw new Error("Give a query or at least one filter");
         }
         s.addCondition("deleted", "false");
@@ -609,7 +731,8 @@ Zotero.ClaudeBridge = new function () {
           .filter((i) => i.isRegularItem() || i.isNote() || i.isAttachment());
         items.sort((x, y) => (y.dateModified > x.dateModified ? 1 : -1));
         const limit = a.limit || 25;
-        return { total: items.length, items: items.slice(0, limit).map(summarize) };
+        const offset = Math.max(0, a.offset || 0);
+        return { total: items.length, offset, items: items.slice(offset, offset + limit).map(summarize) };
       },
     },
     {
@@ -1159,6 +1282,201 @@ Zotero.ClaudeBridge = new function () {
           out.push({ key: item.key, title: field(item, "title"), result: await tryAttachPDF(item) });
         }
         return out;
+      },
+    },
+    {
+      name: "remove_from_collection",
+      title: "Remove items from a collection",
+      description:
+        "Take items out of one collection (to move them, add_to_collection first, then this). " +
+        "The items stay in the library and in their other collections; nothing is deleted.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      write: true,
+      inputSchema: {
+        type: "object",
+        required: ["keys", "collection"],
+        properties: {
+          keys: { type: "array", items: { type: "string" } },
+          collection: { type: "string" },
+          ...LIB,
+        },
+      },
+      async run(a) {
+        const libraryID = getLibraryID(a);
+        assertEditable(libraryID);
+        const col = await resolveCollection(libraryID, a.collection, false);
+        const done = [];
+        for (const k of a.keys || []) {
+          const item = await getItemByKey(libraryID, k);
+          if (!item.inCollection(col.id)) continue;
+          item.removeFromCollection(col.id);
+          await item.saveTx();
+          done.push(item.key);
+        }
+        return { collection: collectionPath(col), removed: done };
+      },
+    },
+    {
+      name: "library_overview",
+      title: "Library overview",
+      description:
+        "Statistics for organising a library: item counts by type, unfiled items, items without a PDF, " +
+        "duplicate sets, retracted papers, collection tree with counts and the most used tags.",
+      annotations: READ,
+      inputSchema: { type: "object", properties: { top_tags: { type: "integer", default: 40 }, ...LIB } },
+      async run(a) {
+        const libraryID = getLibraryID(a);
+        const s = new Zotero.Search();
+        s.libraryID = libraryID;
+        s.addCondition("deleted", "false");
+        const items = (await Zotero.Items.getAsync(await s.search()))
+          .filter((i) => i.isRegularItem() && i.isTopLevelItem());
+        const byType = {};
+        const tagCount = {};
+        let noFile = 0;
+        let unfiled = 0;
+        for (const i of items) {
+          byType[i.itemType] = (byType[i.itemType] || 0) + 1;
+          if (!hasFileAttachment(i)) noFile++;
+          if (!i.getCollections().length) unfiled++;
+          for (const t of i.getTags()) tagCount[t.tag] = (tagCount[t.tag] || 0) + 1;
+        }
+        let duplicateSets = null;
+        try {
+          const dup = new Zotero.Duplicates(libraryID);
+          const ds = await dup.getSearchObject();
+          const ids = await ds.search();
+          const seen = new Set();
+          duplicateSets = 0;
+          for (const id of ids) {
+            if (seen.has(id)) continue;
+            dup.getSetItemsByItemID(id).forEach((x) => seen.add(x));
+            duplicateSets++;
+          }
+        } catch (e) { /* ignore */ }
+        let retracted = null;
+        try {
+          const rs = new Zotero.Search();
+          rs.libraryID = libraryID;
+          rs.addCondition("retracted", "true");
+          retracted = (await rs.search()).length;
+        } catch (e) { /* ignore */ }
+        return {
+          totalItems: items.length,
+          byType,
+          unfiled,
+          withoutPDF: noFile,
+          duplicateSets,
+          retracted,
+          collections: Zotero.Collections.getByLibrary(libraryID, true).filter((c) => !c.deleted)
+            .map((c) => `${collectionPath(c)} (${c.getChildItems(true, false).length})`).sort(),
+          topTags: Object.entries(tagCount).sort((x, y) => y[1] - x[1]).slice(0, a.top_tags || 40)
+            .map(([t, n]) => `${t} (${n})`),
+        };
+      },
+    },
+    {
+      name: "find_duplicates",
+      title: "Find duplicates",
+      description:
+        "List sets of duplicate items (Zotero's own duplicate detection). Merging is left to the user " +
+        "in Zotero's 'Duplicate Items' view, since it is irreversible.",
+      annotations: READ,
+      inputSchema: { type: "object", properties: { limit: { type: "integer", default: 50 }, ...LIB } },
+      async run(a) {
+        const libraryID = getLibraryID(a);
+        const dup = new Zotero.Duplicates(libraryID);
+        const ds = await dup.getSearchObject();
+        const ids = await ds.search();
+        const seen = new Set();
+        const sets = [];
+        for (const id of ids) {
+          if (seen.has(id)) continue;
+          const set = dup.getSetItemsByItemID(id);
+          set.forEach((x) => seen.add(x));
+          sets.push((await Zotero.Items.getAsync(set)).map((i) => ({
+            key: i.key, title: field(i, "title"), year: year(i), dateAdded: i.dateAdded,
+            attachments: i.isRegularItem() ? i.getAttachments().length : 0,
+          })));
+          if (sets.length >= (a.limit || 50)) break;
+        }
+        return { duplicateSets: sets.length, sets };
+      },
+    },
+    {
+      name: "export_markdown",
+      title: "Export to local Markdown knowledge base",
+      description:
+        "Write items to a local folder as Markdown files (YAML front matter, metadata, abstract, notes, " +
+        "PDF annotations and, optionally, the full text of PDFs/EPUBs/web snapshots). Image attachments " +
+        "(screenshots, figures) are copied to <folder>/assets and linked. Also writes <folder>/index.md. " +
+        "Use this instead of get_fulltext when the content should stay available on disk, and to save tokens: " +
+        "the text goes straight to disk and only a file list comes back. Choose items with keys, a collection, " +
+        "or a search query.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {
+        type: "object",
+        required: ["folder"],
+        properties: {
+          folder: { type: "string", description: "Absolute path of the output folder (created if missing)" },
+          keys: { type: "array", items: { type: "string" } },
+          collection: { type: "string", description: "Export a whole collection (with subcollections)" },
+          query: { type: "string", description: "Export the results of an 'everything' search" },
+          include_fulltext: { type: "boolean", default: true },
+          max_chars_per_item: { type: "integer", default: 400000 },
+          limit: { type: "integer", default: 200 },
+          ...LIB,
+        },
+      },
+      async run(a) {
+        const libraryID = getLibraryID(a);
+        const folder = String(a.folder || "").trim();
+        if (!folder.startsWith("/") && !/^[A-Za-z]:\\/.test(folder)) {
+          throw new Error("folder must be an absolute path");
+        }
+        if (/^\/(System|usr|bin|sbin|etc|private\/etc|Library)(\/|$)/.test(folder)) {
+          throw new Error("Refusing to write into a system folder");
+        }
+        // collect items
+        let items = [];
+        for (const k of a.keys || []) items.push(await getItemByKey(libraryID, k));
+        if (a.collection) {
+          const col = await resolveCollection(libraryID, a.collection, false);
+          let ids = col.getChildItems(true, false);
+          for (const sub of col.getDescendents(false, "collection")) {
+            ids = ids.concat(Zotero.Collections.get(sub.id).getChildItems(true, false));
+          }
+          items = items.concat(await Zotero.Items.getAsync([...new Set(ids)]));
+        }
+        if (a.query) {
+          const s = new Zotero.Search();
+          s.libraryID = libraryID;
+          s.addCondition("quicksearch-everything", "contains", a.query);
+          s.addCondition("deleted", "false");
+          items = items.concat(await Zotero.Items.getAsync(await s.search()));
+        }
+        items = toTopLevel(items).slice(0, a.limit || 200);
+        if (!items.length) throw new Error("Nothing to export: give keys, a collection or a query");
+
+        await io().makeDirectory(folder, { createAncestors: true, ignoreExisting: true });
+        const assetsDir = pu().join(folder, "assets");
+        const written = [];
+        const index = ["# Zotero export", "", `Exported ${new Date().toISOString()} from Zotero`, ""];
+        for (const item of items) {
+          await item.loadAllData();
+          const md = await itemToMarkdown(item, {
+            fulltext: a.include_fulltext !== false,
+            maxChars: a.max_chars_per_item || 400000,
+            assetsDir,
+          });
+          const file = pu().join(folder, markdownFileName(item));
+          await Zotero.File.putContentsAsync(file, md.text);
+          written.push({ key: item.key, file, chars: md.text.length, fulltext: md.hasFullText, images: md.images });
+          index.push(`- [${field(item, "title") || item.key}](${markdownFileName(item)}) — ` +
+            `${creatorNames(item, 3).join("; ")} ${year(item)} \`${item.key}\``);
+        }
+        await Zotero.File.putContentsAsync(pu().join(folder, "index.md"), index.join("\n") + "\n");
+        return { folder, files: written.length, items: written };
       },
     },
     {

@@ -1,0 +1,15 @@
+{
+  "name": "zotero-claude-bridge",
+  "owner": { "name": "ChanglinWu" },
+  "metadata": {
+    "description": "Use Zotero as Claude Code's reference library: push papers, sort the library, read it into a local knowledge base."
+  },
+  "plugins": [
+    {
+      "name": "zotero",
+      "source": "./claude-plugin",
+      "description": "/zotero push · sort · read · review · ask · cite — Zotero as Claude Code's reference library (keyless, via the Claude Bridge for Zotero plugin).",
+      "category": "productivity"
+    }
+  ]
+}
