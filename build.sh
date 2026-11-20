@@ -24,3 +24,5 @@ cat > dist/updates.json <<JSON
   }
 }
 JSON
+# Local install snippet with the real path (dist/ is not committed)
+sed "s#/path/to/zotero-claude-bridge-x.y.z.xpi#$PWD/$OUT#" scripts/install_via_run_javascript.js > dist/install_snippet.js

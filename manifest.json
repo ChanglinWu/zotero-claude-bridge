@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Claude Bridge for Zotero",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Keyless local MCP server inside Zotero, so Claude Code can search your library and add papers directly.",
   "author": "zotero-claude-bridge contributors",
   "homepage_url": "https://github.com/ChanglinWu/zotero-claude-bridge",

@@ -232,10 +232,14 @@ Zotero.ClaudeBridge = new function () {
     }
   }
 
-  function creatorNames(item) {
-    return item.getCreatorsJSON().map((c) =>
+  function creatorNames(item, max = 6) {
+    const names = item.getCreatorsJSON().map((c) =>
       c.name || [c.lastName, c.firstName].filter(Boolean).join(", ")
     );
+    if (names.length > max) {
+      return names.slice(0, max - 1).concat(`… +${names.length - max} more, ${names[names.length - 1]}`);
+    }
+    return names;
   }
 
   function year(item) {
@@ -909,11 +913,21 @@ Zotero.ClaudeBridge = new function () {
       async run(a) {
         const libraryID = getLibraryID(a);
         assertEditable(libraryID);
-        const text = [].concat(a.identifiers).join("\n")
-          .replace(/https?:\/\/(dx\.)?doi\.org\//gi, "")
-          .replace(/https?:\/\/arxiv\.org\/(abs|pdf)\//gi, "arXiv:");
-        const idents = Zotero.Utilities.extractIdentifiers(text);
-        if (!idents.length) throw new Error("No DOI, arXiv ID, ISBN or PMID recognised in: " + text);
+        // Zotero's extractIdentifiers() returns only one identifier *type* per call
+        // (DOIs win over arXiv etc.), so parse each entry/line on its own.
+        const pieces = [].concat(a.identifiers).join("\n").split(/[\n,;]+|\s{2,}/)
+          .map((s) => s.trim()
+            .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+            .replace(/^https?:\/\/(www\.)?arxiv\.org\/(abs|pdf)\/([^\s?#]+?)(v\d+)?(\.pdf)?$/i, "arXiv:$3"))
+          .filter(Boolean);
+        const idents = [];
+        const unrecognised = [];
+        for (const p of pieces) {
+          const found = Zotero.Utilities.extractIdentifiers(p);
+          if (found.length) idents.push(...found);
+          else unrecognised.push(p);
+        }
+        if (!idents.length) throw new Error("No DOI, arXiv ID, ISBN or PMID recognised in: " + pieces.join(" | "));
         const col = await resolveCollection(libraryID, a.collection, true);
         const results = [];
         for (const ident of idents) {
@@ -946,6 +960,9 @@ Zotero.ClaudeBridge = new function () {
           } catch (e) {
             results.push({ identifier: label, status: "failed", error: String(e.message || e) });
           }
+        }
+        for (const p of unrecognised) {
+          results.push({ identifier: p, status: "failed", error: "not a recognised DOI/arXiv/ISBN/PMID" });
         }
         return results;
       },
