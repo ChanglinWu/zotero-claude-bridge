@@ -1560,6 +1560,19 @@ Zotero.ClaudeBridge = new function () {
           s.addCondition("url", "is", url);
           s.addCondition("deleted", "false");
           existing = toTopLevel(await Zotero.Items.getAsync(await s.search())).find((i) => i.isRegularItem()) || null;
+          // A DOI or arXiv ID in the URL (doi.org/…, arxiv.org/abs|pdf/…, publisher URLs with /doi/…)
+          // identifies the work even when the saved copy has a different URL.
+          if (!existing) {
+            const idText = url
+              .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+              .replace(/^https?:\/\/(www\.)?arxiv\.org\/(abs|pdf)\/([^\s?#]+?)(v\d+)?(\.pdf)?$/i, "arXiv:$3")
+              .replace(/^https?:\/\/[^/]+\/(?:.*\/)?doi\/(?:abs\/|full\/|pdf\/)?(10\.\d{4,}\/[^?#]+)$/i, "$1");
+            const ids = idText === url ? [] : Zotero.Utilities.extractIdentifiers(decodeURIComponent(idText));
+            for (const ident of ids) {
+              existing = await findExisting(libraryID, ident);
+              if (existing) break;
+            }
+          }
         }
 
         const browser = new HiddenBrowser({ docShell: { allowImages: true } });
