@@ -1511,6 +1511,145 @@ Zotero.ClaudeBridge = new function () {
       },
     },
     {
+      name: "save_webpage",
+      title: "Save web page with snapshot",
+      description:
+        "Save a web page to Zotero the way the browser connector does: load it in a hidden browser, " +
+        "run Zotero's site translators (journal/publisher/news pages get full metadata, e.g. a journal " +
+        "article instead of a web page) and store a full HTML snapshot (or the PDF, for PDF URLs). The " +
+        "snapshot is indexed, so it is searchable and readable with get_fulltext / export_markdown. " +
+        "If the URL is already in the library, a new dated snapshot is added to that item instead of " +
+        "creating a duplicate. With parent_key, the snapshot is attached to that existing item.",
+      annotations: ADD,
+      write: true,
+      inputSchema: {
+        type: "object",
+        required: ["url"],
+        properties: {
+          url: { type: "string", description: "http(s) URL of the page" },
+          collection: { type: "string", description: "Collection key, name or path (created if missing)" },
+          tags: { type: "array", items: { type: "string" } },
+          title: { type: "string", description: "Override the page title" },
+          parent_key: { type: "string", description: "Attach the snapshot to this existing item instead" },
+          use_translators: { type: "boolean", default: true, description: "Try Zotero's site translators for metadata" },
+          ...LIB,
+        },
+      },
+      async run(a) {
+        let libraryID = getLibraryID(a);
+        const url = String(a.url || "").trim();
+        if (!/^https?:\/\/\S+$/i.test(url)) throw new Error("url must be an http(s) URL");
+        const stamp = new Date().toISOString().slice(0, 10);
+        const cu = typeof ChromeUtils !== "undefined" ? ChromeUtils : Zotero.getMainWindow().ChromeUtils;
+        const { HiddenBrowser } = cu.importESModule("chrome://zotero/content/HiddenBrowser.mjs");
+
+        let parent = null;
+        if (a.parent_key) {
+          parent = await getItemByKey(libraryID, a.parent_key);
+          if (!parent.isRegularItem()) throw new Error("parent_key must be a regular item");
+          libraryID = parent.libraryID;
+        }
+        assertEditable(libraryID);
+        const col = parent ? null : await resolveCollection(libraryID, a.collection, true);
+
+        // Same URL already saved? Then refresh it with a new snapshot instead of duplicating.
+        let existing = null;
+        if (!parent) {
+          const s = new Zotero.Search();
+          s.libraryID = libraryID;
+          s.addCondition("url", "is", url);
+          s.addCondition("deleted", "false");
+          existing = toTopLevel(await Zotero.Items.getAsync(await s.search())).find((i) => i.isRegularItem()) || null;
+        }
+
+        const browser = new HiddenBrowser({ docShell: { allowImages: true } });
+        try {
+          await browser.load(url, { requireSuccessfulStatus: true });
+          let item = parent || existing;
+          let status = parent ? "snapshot added to item" : existing ? "existing item, new snapshot added" : "added";
+          let method = parent || existing ? "snapshot" : null;
+
+          if (!item && a.use_translators !== false) {
+            const { RemoteTranslate } = cu.importESModule("chrome://zotero/content/RemoteTranslate.mjs");
+            const tr = new RemoteTranslate();
+            try {
+              await tr.setBrowser(browser);
+              const translators = await tr.detect();
+              if (translators && translators.length) {
+                const items = await tr.translate({
+                  libraryID,
+                  collections: col ? [col.id] : false,
+                  saveAttachments: true,
+                });
+                if (items && items.length) {
+                  item = items[0];
+                  method = "translator: " + translators[0].label;
+                }
+              }
+            } catch (e) {
+              Zotero.debug("[Claude Bridge] translation failed, saving as web page: " + e);
+            } finally {
+              tr.dispose();
+            }
+          }
+
+          if (!item) {
+            item = new Zotero.Item("webpage");
+            item.libraryID = libraryID;
+            item.setField("title", a.title || browser.contentTitle || url);
+            item.setField("url", url);
+            item.setField("accessDate", Zotero.Date.dateToSQL(new Date(), true));
+            try {
+              item.setField("websiteTitle", new URL(url).hostname.replace(/^www\./, ""));
+            } catch (e) { /* ignore */ }
+            if (col) item.addToCollection(col.id);
+            await item.saveTx();
+            method = "web page";
+          } else if (a.title && !parent && !existing) {
+            item.setField("title", a.title);
+          }
+          if (col && !item.inCollection(col.id)) item.addToCollection(col.id);
+          await addTags(item, a.tags);
+          await item.saveTx();
+
+          // Make sure there is a snapshot of *this* load (translators may already have saved one)
+          const snapshots = () => item.getAttachments().map((id) => Zotero.Items.get(id))
+            .filter((x) => x && !x.deleted && x.isFileAttachment() && x.dateAdded >= Zotero.Date.dateToSQL(new Date(Date.now() - 10 * 60000), true));
+          let att = method && method.startsWith("translator") ? snapshots()[0] : null;
+          if (!att) {
+            att = await Zotero.Attachments.importFromDocument({
+              libraryID,
+              browser,
+              parentItemID: item.id,
+              title: `Snapshot ${stamp}`,
+            });
+          }
+
+          let chars = 0;
+          if (att) {
+            try {
+              chars = (await attachmentText(att, true)).length;
+            } catch (e) { /* ignore */ }
+          }
+          const r = {
+            status,
+            method,
+            ...summarize(item),
+            url,
+            snapshot: att ? { key: att.key, title: att.getField("title"), contentType: att.attachmentContentType, indexedChars: chars } : null,
+          };
+          if (col) r.collection = collectionPath(col);
+          if (status === "added") {
+            const dups = await sameTitleItems(item);
+            if (dups.length) r.possibleDuplicates = dups;
+          }
+          return r;
+        } finally {
+          browser.destroy();
+        }
+      },
+    },
+    {
       name: "select_in_zotero",
       title: "Show item in Zotero",
       description: "Bring the Zotero window forward and select the given item so the user can look at it.",

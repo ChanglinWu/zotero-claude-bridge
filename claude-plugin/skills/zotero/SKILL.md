@@ -1,7 +1,7 @@
 ---
 name: zotero
-description: Use the user's Zotero library as Claude's reference library. Subcommands - push (save papers found in this conversation to Zotero by title or short name), sort (organise the library into collections, or build a topic collection for a goal such as a literature review), read (pull Zotero items, PDFs, notes, web snapshots and screenshots into a local Markdown knowledge base), review (write a literature review from the library), ask (answer a question from the library with citations), cite (BibTeX/bibliography for a manuscript), check (library health). Use whenever the user types /zotero or @zotero, or says things like "push this paper to Zotero", "add these to Zotero", "save to my library", "organise my Zotero", "what does my library say about", "整理我的 Zotero", "推送到 Zotero", "存到文献库", "从 Zotero 里找", "写文献综述".
-argument-hint: "push|sort|read|review|ask|cite|check [what]"
+description: Use the user's Zotero library as Claude's reference library. Subcommands - push (save papers found in this conversation to Zotero by title or short name), sort (organise the library into collections, or build a topic collection for a goal such as a literature review), read (pull Zotero items, PDFs, notes, web snapshots and screenshots into a local Markdown knowledge base), review (write a literature review from the library), ask (answer a question from the library with citations), cite (BibTeX/bibliography for a manuscript), save (save a web page with a full snapshot, like the Zotero browser connector), check (library health). Use whenever the user types /zotero or @zotero, or says things like "push this paper to Zotero", "add these to Zotero", "save to my library", "organise my Zotero", "what does my library say about", "整理我的 Zotero", "推送到 Zotero", "存到文献库", "从 Zotero 里找", "写文献综述", "save this page to Zotero", "把这个网页存到 Zotero", "网页快照".
+argument-hint: "push|save|sort|read|review|ask|cite|check [what]"
 ---
 
 # Zotero
@@ -10,13 +10,13 @@ The user's Zotero library is reached through the **Zotero MCP tools** (server `z
 `search_items`, `get_item`, `get_fulltext`, `get_annotations`, `list_collections`, `get_collection_items`,
 `recent_items`, `get_selected_items`, `library_overview`, `find_duplicates`, `export_citations`,
 `export_markdown`, `add_by_identifier`, `add_item`, `update_item`, `add_note`, `create_collection`,
-`add_to_collection`, `remove_from_collection`, `find_pdf`, `select_in_zotero`). The tools run inside the
+`add_to_collection`, `remove_from_collection`, `find_pdf`, `save_webpage`, `select_in_zotero`). The tools run inside the
 user's own Zotero app, so there are no API keys, and they never delete anything.
 
 Request: `$ARGUMENTS`
 
 Read the first word of the request as the subcommand. If there is none, infer it from the request
-(a paper title → push; a question → ask). With no request at all, briefly list the subcommands.
+(a paper title → push; a web page URL or "this page" → save; a question → ask). With no request at all, briefly list the subcommands.
 
 ## If the Zotero tools are missing or fail to connect
 
@@ -54,8 +54,9 @@ Zotero must be running with the **Claude Bridge for Zotero** plugin. Check with
      `curl -s "https://api.crossref.org/works?rows=3&select=DOI,title,author,issued,container-title&query.bibliographic=<url-encoded title + first author + year>"`
    - for preprints try arXiv: `curl -s "http://export.arxiv.org/api/query?max_results=3&search_query=ti:%22<title>%22"`
    - accept a match only if the title clearly matches (ignoring case/punctuation) and the year/author agree.
-     If two candidates are plausible, ask. If none is found, use web search, and as a last resort
-     `add_item` with only the metadata you actually have (plus `url`).
+     If two candidates are plausible, ask. If none is found, use web search; if you have the paper's
+     landing-page URL, `save_webpage` it (Zotero's translators then read the metadata from the page); as a
+     last resort `add_item` with only the metadata you actually have (plus `url`).
 3. **Add** with one `add_by_identifier` call for all identifiers:
    - collection: the one the user named; otherwise the collection named in the user's Zotero preference
      (CLAUDE.md or memory) if any; otherwise `Claude Inbox`.
@@ -63,6 +64,25 @@ Zotero must be running with the **Claude Bridge for Zotero** plugin. Check with
 4. **Report** a table: title · status (added / already in library / failed) · key · PDF found? ·
    collection. If a result lists `possibleDuplicates`, say so and suggest merging them in Zotero's
    *Duplicate Items* view. For failures, say why and offer `add_item`. Offer `select_in_zotero` for the first item.
+
+## save — web pages with a snapshot
+
+`/zotero save <URL | page name found in this conversation> [to <collection>] [#tag …]`
+
+For anything that is a web page rather than a paper with an identifier: conference sites, registration
+and call-for-papers pages, news, blog posts, documentation, datasheets, product pages.
+
+1. Find the URL (from the conversation, or search the web for the official page; prefer the organiser's
+   own site over aggregators).
+2. `save_webpage` with the collection (rules as for push; the user's CLAUDE.md may route some kinds of pages,
+   e.g. conference information, to a specific collection). Zotero runs its site translators, so a journal or
+   news page becomes a properly described item, and stores a full HTML snapshot that is full-text indexed.
+   Saving the same URL again adds a new dated snapshot to the existing item, which is how to keep
+   a page's history (e.g. re-save a registration page once fees are published).
+3. Report: title, item type and how it was saved (`method`), key, snapshot key and indexed size,
+   collection. If the snapshot has very little text (a login wall, a page that needs JavaScript or a
+   cookie banner), say so. Offer a short `add_note` with the key facts from the page (dates, fees,
+   deadlines) when that is what the user cares about.
 
 ## sort — organise the library
 
@@ -139,5 +159,6 @@ answer citing item keys and pages. Say clearly when the library does not cover s
 - `note <item> <text>` / "save this summary to Zotero": `add_note` (Markdown) on the item, or as a
   standalone note in a collection.
 - `open <item>`: `select_in_zotero`.
+- `snapshot <item> [url]`: `save_webpage` with `parent_key` to attach a fresh snapshot to an existing item.
 - `recent`: `recent_items`.
 - `annotations <item>`: `get_annotations`, grouped by colour/page.

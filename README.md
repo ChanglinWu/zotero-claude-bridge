@@ -54,6 +54,7 @@ Check that it works: `curl http://127.0.0.1:23119/claude-bridge/info`, or run `p
 | Command | What happens |
 |---|---|
 | `/zotero push <title / short name / DOI / arXiv / "all" / "#3"> [to <collection>]` | Papers found in the conversation (search results, a digest, a reading list) are matched to a DOI or arXiv ID via Crossref/arXiv, without needing a key, then added with full metadata and an open-access PDF. Duplicates are detected. Without a collection they go to `Claude Inbox`. |
+| `/zotero save <URL / page> [to <collection>]` | Saves a web page as the Zotero browser connector does. Zotero's site translators supply the metadata, and a full HTML snapshot is stored and indexed for full-text search. Saving the same URL again adds a new dated snapshot instead of a duplicate. |
 | `/zotero sort [goal]` | Surveys the library and proposes a collection tree and tags, either a general tidy-up or a goal such as "for a review on X", which searches the whole library. **Nothing changes until you approve the plan.** Duplicates are reported, not merged. |
 | `/zotero read <items / selected / collection / query> [into <folder>]` | Exports items to a local Markdown knowledge base (default `./zotero-kb/`). Each item gets one file with metadata, abstract, notes, PDF highlights and full text. Web snapshots are included and screenshots are copied to `assets/`. Claude then works from these files. |
 | `/zotero review <topic>` | Searches the whole library, builds an evidence matrix, writes a review draft that cites only your library, writes `references.bib`, and lists gaps you can fill with `push`. |
@@ -88,6 +89,7 @@ Writing `@zotero …` or asking in plain words ("push this paper to Zotero", "�
 | `find_duplicates` | Duplicate sets, for you to merge in Zotero |
 | `export_markdown` | Writes items as Markdown (with full text, annotations and images) into a local folder, so a large library doesn't have to pass through the chat |
 | `find_pdf` | Find and attach an open-access PDF for existing items |
+| `save_webpage` | Save a web page with a full snapshot, using a hidden browser and Zotero's site translators, either as a new item or as a fresh snapshot of an existing one |
 | `select_in_zotero` | Show an item in the Zotero window |
 
 The plugin never deletes or trashes anything.
@@ -134,6 +136,7 @@ The source is plain JavaScript with no build step: `bootstrap.js` and `src/bridg
 **`/zotero` 命令**
 
 - `/zotero push <论文名/简称/DOI/arXiv/"全部"/"第3篇">`：把对话里找到的文献推送进 Zotero，自动补全元数据、尝试下载开放获取的 PDF、自动查重。
+- `/zotero save <网址/网页>`：像 Zotero 浏览器插件一样保存网页：自动识别元数据，保存完整的网页快照，并支持全文检索。同一网址再存一次时，会给原条目加一份带日期的新快照，不会产生重复条目。
 - `/zotero sort [目标]`：整理文献库，可以按主题分类，也可以按特定需求组织，比如「为某主题的综述建一个分类」。整理方案要你确认后才会动手。
 - `/zotero read <条目/当前选中/分类/关键词>`：把文献、笔记、PDF 高亮、网页快照和截图导出成本地 Markdown，相当于给 Claude 外挂一个知识库。
 - `/zotero review <主题>`：检索整个文献库，写一份只引用你自己库里文献的综述草稿，生成 `references.bib`，并指出还缺哪些文献。

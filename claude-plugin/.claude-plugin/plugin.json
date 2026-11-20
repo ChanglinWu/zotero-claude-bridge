@@ -1,6 +1,6 @@
 {
   "name": "zotero",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Zotero as Claude Code's reference library: /zotero push, sort, read, review, ask, cite. Needs the Claude Bridge for Zotero plugin (no API key).",
   "author": { "name": "ChanglinWu" },
   "homepage": "https://github.com/ChanglinWu/zotero-claude-bridge",
