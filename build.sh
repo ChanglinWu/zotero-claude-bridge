@@ -17,6 +17,7 @@ cat > dist/updates.json <<JSON
         {
           "version": "$VERSION",
           "update_link": "https://github.com/ChanglinWu/zotero-claude-bridge/releases/download/v$VERSION/zotero-claude-bridge-$VERSION.xpi",
+          "update_hash": "sha256:$(shasum -a 256 "$OUT" | cut -d' ' -f1)",
           "applications": { "zotero": { "strict_min_version": "6.999" } }
         }
       ]
