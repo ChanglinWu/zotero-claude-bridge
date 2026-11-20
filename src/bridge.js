@@ -1552,7 +1552,20 @@ Zotero.ClaudeBridge = new function () {
         assertEditable(libraryID);
         const col = parent ? null : await resolveCollection(libraryID, a.collection, true);
 
-        // Same URL already saved? Then refresh it with a new snapshot instead of duplicating.
+        // A DOI or arXiv ID in the URL (doi.org/…, arxiv.org/abs|pdf/…, publisher URLs with /doi/…)
+        // identifies the work even when a saved copy has a different URL.
+        const idText = url
+          .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+          .replace(/^https?:\/\/(www\.)?arxiv\.org\/(abs|pdf)\/([^\s?#]+?)(v\d+)?(\.pdf)?$/i, "arXiv:$3")
+          .replace(/^https?:\/\/[^/]+\/(?:.*\/)?doi\/(?:abs\/|full\/|pdf\/)?(10\.\d{4,}\/[^?#]+)$/i, "$1");
+        let urlIdents = [];
+        if (idText !== url) {
+          try {
+            urlIdents = Zotero.Utilities.extractIdentifiers(decodeURIComponent(idText));
+          } catch (e) { /* ignore */ }
+        }
+
+        // Same URL or same work already saved? Then refresh it with a new snapshot instead of duplicating.
         let existing = null;
         if (!parent) {
           const s = new Zotero.Search();
@@ -1560,29 +1573,45 @@ Zotero.ClaudeBridge = new function () {
           s.addCondition("url", "is", url);
           s.addCondition("deleted", "false");
           existing = toTopLevel(await Zotero.Items.getAsync(await s.search())).find((i) => i.isRegularItem()) || null;
-          // A DOI or arXiv ID in the URL (doi.org/…, arxiv.org/abs|pdf/…, publisher URLs with /doi/…)
-          // identifies the work even when the saved copy has a different URL.
-          if (!existing) {
-            const idText = url
-              .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
-              .replace(/^https?:\/\/(www\.)?arxiv\.org\/(abs|pdf)\/([^\s?#]+?)(v\d+)?(\.pdf)?$/i, "arXiv:$3")
-              .replace(/^https?:\/\/[^/]+\/(?:.*\/)?doi\/(?:abs\/|full\/|pdf\/)?(10\.\d{4,}\/[^?#]+)$/i, "$1");
-            const ids = idText === url ? [] : Zotero.Utilities.extractIdentifiers(decodeURIComponent(idText));
-            for (const ident of ids) {
-              existing = await findExisting(libraryID, ident);
-              if (existing) break;
-            }
+          for (const ident of urlIdents) {
+            if (existing) break;
+            existing = await findExisting(libraryID, ident);
           }
         }
 
+        let item = parent || existing;
+        const status = parent ? "snapshot added to item" : existing ? "existing item, new snapshot added" : "added";
+        let method = item ? "snapshot" : null;
+        let created = false; // an item made by this call is removed again if saving fails
+        let isPDF = /\.pdf($|[?#])/i.test(url) || /arxiv\.org\/pdf\//i.test(url);
         const browser = new HiddenBrowser({ docShell: { allowImages: true } });
         try {
-          await browser.load(url, { requireSuccessfulStatus: true });
-          let item = parent || existing;
-          let status = parent ? "snapshot added to item" : existing ? "existing item, new snapshot added" : "added";
-          let method = parent || existing ? "snapshot" : null;
+          // A new work with a DOI/arXiv ID: get the metadata by identifier, as add_by_identifier does.
+          if (!item && urlIdents.length && a.use_translators !== false) {
+            try {
+              const tr = new Zotero.Translate.Search();
+              tr.setIdentifier(urlIdents[0]);
+              const translators = await tr.getTranslators();
+              if (translators.length) {
+                tr.setTranslator(translators);
+                const items = await tr.translate({ libraryID, collections: col ? [col.id] : false, saveAttachments: true });
+                if (items && items.length) {
+                  item = items[0];
+                  created = true;
+                  method = "identifier: " + Object.entries(urlIdents[0]).map(([k, v]) => `${k} ${v}`).join("");
+                }
+              }
+            } catch (e) {
+              Zotero.debug("[Claude Bridge] identifier lookup failed, using the page: " + e);
+            }
+          }
 
-          if (!item && a.use_translators !== false) {
+          if (!isPDF) {
+            await browser.load(url, { requireSuccessfulStatus: true });
+            isPDF = Zotero.Attachments.isPDFJSBrowser(browser) || browser.documentContentType === "application/pdf";
+          }
+
+          if (!item && !isPDF && a.use_translators !== false) {
             const { RemoteTranslate } = cu.importESModule("chrome://zotero/content/RemoteTranslate.mjs");
             const tr = new RemoteTranslate();
             try {
@@ -1596,6 +1625,7 @@ Zotero.ClaudeBridge = new function () {
                 });
                 if (items && items.length) {
                   item = items[0];
+                  created = true;
                   method = "translator: " + translators[0].label;
                 }
               }
@@ -1609,7 +1639,15 @@ Zotero.ClaudeBridge = new function () {
           if (!item) {
             item = new Zotero.Item("webpage");
             item.libraryID = libraryID;
-            item.setField("title", a.title || browser.contentTitle || url);
+            let title = a.title || (!isPDF && browser.contentTitle) || "";
+            if (!title) {
+              try {
+                title = decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || url);
+              } catch (e) {
+                title = url;
+              }
+            }
+            item.setField("title", title);
             item.setField("url", url);
             item.setField("accessDate", Zotero.Date.dateToSQL(new Date(), true));
             try {
@@ -1617,19 +1655,29 @@ Zotero.ClaudeBridge = new function () {
             } catch (e) { /* ignore */ }
             if (col) item.addToCollection(col.id);
             await item.saveTx();
-            method = "web page";
-          } else if (a.title && !parent && !existing) {
+            created = true;
+            method = isPDF ? "PDF" : "web page";
+          } else if (a.title && created) {
             item.setField("title", a.title);
           }
           if (col && !item.inCollection(col.id)) item.addToCollection(col.id);
           await addTags(item, a.tags);
           await item.saveTx();
 
-          // Make sure there is a snapshot of *this* load (translators may already have saved one)
-          const snapshots = () => item.getAttachments().map((id) => Zotero.Items.get(id))
-            .filter((x) => x && !x.deleted && x.isFileAttachment() && x.dateAdded >= Zotero.Date.dateToSQL(new Date(Date.now() - 10 * 60000), true));
-          let att = method && method.startsWith("translator") ? snapshots()[0] : null;
-          if (!att) {
+          // Make sure there is a fresh file for *this* save (translators may already have saved one)
+          const since = Zotero.Date.dateToSQL(new Date(Date.now() - 10 * 60000), true);
+          const fresh = () => item.getAttachments().map((id) => Zotero.Items.get(id))
+            .filter((x) => x && !x.deleted && x.isFileAttachment() && x.dateAdded >= since);
+          let att = created && method !== "web page" && method !== "PDF" ? fresh()[0] : null;
+          if (!att && isPDF) {
+            att = await Zotero.Attachments.importFromURL({
+              libraryID,
+              url,
+              parentItemID: item.id,
+              contentType: "application/pdf",
+              title: created ? "PDF" : `PDF ${stamp}`,
+            });
+          } else if (!att) {
             att = await Zotero.Attachments.importFromDocument({
               libraryID,
               browser,
@@ -1657,6 +1705,14 @@ Zotero.ClaudeBridge = new function () {
             if (dups.length) r.possibleDuplicates = dups;
           }
           return r;
+        } catch (e) {
+          // Roll back an item this call created, so a failed save leaves nothing half-made behind
+          if (created && item && item.id) {
+            try {
+              await item.eraseTx();
+            } catch (e2) { /* ignore */ }
+          }
+          throw e;
         } finally {
           browser.destroy();
         }
