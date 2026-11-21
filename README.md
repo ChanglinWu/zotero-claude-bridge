@@ -38,6 +38,7 @@ claude › Saved to cc/会议资讯 with a full snapshot (9PWZ3AVK). The page sa
 | Web pages | **Full snapshots**, as with the browser connector | Rarely |
 | Read PDFs, highlights and notes | Yes, plus export to a local Markdown knowledge base | Varies |
 | Ready-made workflows | **`/zotero` skill**: push · save · sort · read · review · ask · cite · check | Tools only |
+| Claude Desktop **chat** | **Works without MCP** (folder mailbox) | Needs an MCP server configured |
 | Deletes anything? | **Never** | Varies |
 
 ## How it works
@@ -79,6 +80,23 @@ Start a new session and try `/zotero check`. Zotero has to be running while you 
 
 Check the connection: `curl http://127.0.0.1:23119/claude-bridge/info`, or run `python3 scripts/smoke_test.py`.
 
+## Use in Claude Desktop chat (no MCP)
+
+The `/zotero` skill also works in the **chat** of the Claude desktop app, with no MCP server, extension or API key. The Zotero plugin also watches a **folder mailbox** in your Zotero data directory:
+
+```
+~/Zotero/claude-bridge/
+  inbox/<id>.json    ← Claude writes a request   {"id": "…", "tool": "search_items", "arguments": {…}}
+  outbox/<id>.json   → Zotero writes the answer  {"id": "…", "ok": true, "result": …}
+  status.json        ← refreshed every few seconds while Zotero runs
+```
+
+1. Install the Zotero plugin (step 1 above) and keep Zotero running.
+2. In the chat, give Claude access to your Zotero folder (`~/Zotero`) when it asks.
+3. Use `/zotero push …`, `/zotero save …` and the other commands as usual. The skill uses the mailbox automatically when the tools aren't connected directly.
+
+The skill never falls back to clicking through Zotero on screen.
+
 ## The `/zotero` skill
 
 | Command | What happens |
@@ -112,8 +130,6 @@ The skill needs the Zotero plugin (step 1 of the quick start) for its tools. Per
 - Conference information (registration pages, calls for papers, deadlines) goes in `Conferences`.
 ```
 
-> Claude Desktop (chat) only supports stdio servers. If you want it there too, add
-> `{"command": "npx", "args": ["mcp-remote", "http://127.0.0.1:23119/claude-bridge/mcp"]}` to `claude_desktop_config.json`.
 
 ## Tools
 
@@ -156,6 +172,7 @@ Everything stays on your computer. The MCP server is your own Zotero on `127.0.0
 ## Security
 
 - The plugin only listens on localhost. Zotero rejects requests whose `Host` header is not local, which blocks DNS rebinding, and requests from web pages. The plugin also refuses any request that has an `Origin` header.
+- The folder mailbox (`~/Zotero/claude-bridge/`) accepts requests from anything that can write to your Zotero folder. That is the same trust level as the local endpoint, and read-only mode applies to both.
 - Any program running as your user on this Mac can reach the endpoint. That is the same trust level as Zotero's existing connector and local API.
 - Read-only mode: in Zotero, open Settings → Advanced → Config Editor and set `extensions.zotero-claude-bridge.readOnly` to `true`. Write tools then return an error.
 
@@ -193,6 +210,8 @@ The source is plain JavaScript with no build step: `bootstrap.js` and `src/bridg
 - `/zotero check`：检查文献库，包括重复条目、缺 PDF 的条目和未分类的条目。
 
 在对话里写 `@zotero …`，或直接说「推送到 Zotero」「整理我的 Zotero」，也能触发这个 skill。
+
+**在 Claude 桌面版聊天里使用（不需要 MCP）**：Zotero 插件会监视 `~/Zotero/claude-bridge/` 这个文件夹。Claude 把请求写进 `inbox/`，Zotero 执行后把结果写到 `outbox/`。在聊天里允许 Claude 访问 `~/Zotero` 文件夹后，就能直接用 `/zotero` 的各个命令，全程不需要 MCP、扩展或 API 密钥，也不会去操作屏幕。
 
 **单独使用 skill**：skill 只有一个文件 [`SKILL.md`](claude-plugin/skills/zotero/SKILL.md)，欢迎阅读、fork 或改成适合你自己的工作流。不装 Claude Code 插件也能用：把它放到 `~/.claude/skills/zotero/`，再用 `claude mcp add` 连接 Zotero（命令见上方英文部分）。个人偏好，比如默认分类，写在你自己的 `~/.claude/CLAUDE.md` 里。
 

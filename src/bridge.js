@@ -59,12 +59,140 @@ Zotero.ClaudeBridge = new function () {
       },
     };
     Zotero.Server.Endpoints[INFO_ENDPOINT] = InfoEndpoint;
+
+    startMailbox().catch((e) => Zotero.logError(e));
   };
 
   this.shutdown = function () {
     delete Zotero.Server.Endpoints[ENDPOINT];
     delete Zotero.Server.Endpoints[INFO_ENDPOINT];
+    mailboxRunning = false;
   };
+
+  // ---------------------------------------------------------------------------
+  // Folder mailbox (no MCP needed)
+  //
+  // <Zotero data directory>/claude-bridge/
+  //   inbox/<id>.json    request  {"id": "...", "tool": "search_items", "arguments": {...}}
+  //   outbox/<id>.json   response {"id", "tool", "ok", "result" | "text", "finished"}
+  //   status.json        heartbeat {"version", "zotero", "updated", "readOnly", "tools"}
+  //
+  // Lets Claude use the tools from anywhere that can read and write files in the
+  // Zotero data directory, e.g. Claude Desktop chat with access to that folder.
+  // ---------------------------------------------------------------------------
+
+  let mailboxRunning = false;
+
+  async function startMailbox() {
+    const base = pu().join(Zotero.DataDirectory.dir, "claude-bridge");
+    const inbox = pu().join(base, "inbox");
+    const outbox = pu().join(base, "outbox");
+    await io().makeDirectory(inbox, { createAncestors: true, ignoreExisting: true });
+    await io().makeDirectory(outbox, { createAncestors: true, ignoreExisting: true });
+    await Zotero.File.putContentsAsync(pu().join(base, "README.md"), MAILBOX_README);
+    mailboxRunning = true;
+    let lastBeat = 0;
+    let lastCleanup = 0;
+    const pending = new Map(); // unreadable request file -> first seen
+    while (mailboxRunning) {
+      try {
+        const now = Date.now();
+        if (now - lastBeat > 5000) {
+          lastBeat = now;
+          await writeAtomic(pu().join(base, "status.json"), JSON.stringify({
+            plugin: "zotero-claude-bridge",
+            version,
+            zotero: Zotero.version,
+            updated: new Date(now).toISOString(),
+            readOnly: isReadOnly(),
+            tools: TOOLS.map((t) => t.name),
+          }, null, 1));
+        }
+        if (now - lastCleanup > 600000) {
+          lastCleanup = now;
+          for (const f of await io().getChildren(outbox)) {
+            const st = await io().stat(f);
+            if (now - st.lastModified > 86400000) await io().remove(f, { ignoreAbsent: true });
+          }
+        }
+        const files = (await io().getChildren(inbox))
+          .filter((f) => f.endsWith(".json"))
+          .sort();
+        for (const file of files) {
+          if (!mailboxRunning) break;
+          await handleMailboxFile(file, outbox, pending);
+        }
+      } catch (e) {
+        Zotero.debug("[Claude Bridge] mailbox: " + e);
+      }
+      await Zotero.Promise.delay(700);
+    }
+  }
+
+  async function handleMailboxFile(file, outbox, pending) {
+    const name = pu().filename(file).replace(/\.json$/, "");
+    let req;
+    try {
+      req = JSON.parse(await Zotero.File.getContentsAsync(file));
+    } catch (e) {
+      // Possibly still being written: give it a few seconds before answering with an error
+      const first = pending.get(file) || Date.now();
+      pending.set(file, first);
+      if (Date.now() - first < 5000) return;
+      req = { id: name, _error: "Request is not valid JSON: " + e.message };
+    }
+    pending.delete(file);
+    await io().remove(file, { ignoreAbsent: true });
+
+    let id = String((req && req.id) || name).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80) || "request";
+    const out = { id, tool: req && req.tool, ok: false, started: new Date().toISOString() };
+    if (req._error) {
+      out.text = req._error;
+    } else if (!req.tool) {
+      out.text = 'Missing "tool". Write {"id": "...", "tool": "<name>", "arguments": {...}}; ' +
+        'use "tool": "list_tools" to get every tool with its parameters.';
+    } else if (req.tool === "list_tools") {
+      out.ok = true;
+      out.result = TOOLS.map(({ name, description, inputSchema, write }) => ({
+        name, description, write: !!write, parameters: inputSchema,
+      }));
+    } else {
+      const r = await callTool({ name: req.tool, arguments: req.arguments || {} });
+      const text = (r.content || []).map((c) => c.text).join("\n");
+      out.ok = !r.isError;
+      try {
+        out.result = JSON.parse(text);
+      } catch (e) {
+        out.text = text;
+      }
+    }
+    out.finished = new Date().toISOString();
+    await writeAtomic(pu().join(outbox, id + ".json"), JSON.stringify(out, null, 1));
+  }
+
+  async function writeAtomic(path, text) {
+    const tmp = path + ".tmp";
+    await Zotero.File.putContentsAsync(tmp, text);
+    await io().move(tmp, path);
+  }
+
+  const MAILBOX_README = `# Claude Bridge for Zotero: folder mailbox
+
+The Zotero plugin "Claude Bridge for Zotero" watches this folder while Zotero is running.
+It lets Claude (for example in Claude Desktop chat, with access to this folder) use your
+Zotero library without any MCP server or API key.
+
+- Write a request to inbox/<id>.json:
+    {"id": "abc123", "tool": "search_items", "arguments": {"query": "hybrid bonding"}}
+- The answer appears in outbox/<id>.json within a second or two (adding papers can take ~30 s):
+    {"id": "abc123", "tool": "search_items", "ok": true, "result": {...}}
+- {"id": "...", "tool": "list_tools"} lists every tool and its parameters.
+- status.json is refreshed every few seconds while Zotero is running.
+
+Nothing here is ever deleted from your library: the tools only read and add.
+Answers older than one day are removed from outbox/ automatically.
+https://github.com/ChanglinWu/zotero-claude-bridge
+`;
 
   // ---------------------------------------------------------------------------
   // HTTP / JSON-RPC
