@@ -1,12 +1,44 @@
 # Claude Bridge for Zotero
 
-A Zotero plugin that lets **Claude Code** (desktop app or CLI) work directly with your Zotero library.
-**No API key, no zotero.org account and no extra server to install.**
+[![Release](https://img.shields.io/github/v/release/ChanglinWu/zotero-claude-bridge?label=release)](https://github.com/ChanglinWu/zotero-claude-bridge/releases/latest)
+[![Zotero 7–10](https://img.shields.io/badge/Zotero-7%20%E2%80%93%2010-CC2936)](https://www.zotero.org)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin%20%2B%20skill-D97757)](#quick-start)
+[![No API key](https://img.shields.io/badge/API%20key-not%20needed-2ea44f)](#how-it-works)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[中文说明](#中文说明)
+**Use Zotero as Claude Code's reference library, with no API key.**
+Papers Claude finds go straight into Zotero, with real metadata, the PDF and duplicate checks. Your whole library, including PDFs, highlights, notes and web snapshots, becomes something Claude can search, read and cite.
 
-- Papers Claude finds can go straight into Zotero, with full metadata and an open-access PDF when one exists.
-- Claude can use your Zotero library as its reference collection: search it, read full texts and your PDF highlights, and write notes.
+[中文说明](#中文说明) · [Quick start](#quick-start) · [The /zotero skill](#the-zotero-skill) · [Tools](#tools)
+
+```text
+you › find the latest TSMC paper on its EPIC/COUPE photonic integration and put it in cc/光电子学集成
+claude › Found it: "Optical and Electrical Characterization of a Compact Universal Photonic Engine",
+         ECTC 2025, DOI 10.1109/ECTC51687.2025.00015.
+         Already in your library (E3BHWFBK, PDF attached), so no copy was made.
+         Filed into cc/光电子学集成 (new collection).
+
+you › /zotero push the other three TSMC papers too
+claude › | 2021 | Heterogeneous Integration of a Compact Universal Photonic Engine…        | ECTC | added 2PKPSQGG |
+         | 2024 | High Bandwidth and Energy Efficient E-O System Integration Using COUPE | ECTC | added IILN9N2E |
+         | 2025 | TSMC in the Silicon Photonics Era – an electrical perspective         | OFC  | added XWM3QGXY |
+
+you › /zotero save https://ispsd2027.com/registration/
+claude › Saved to cc/会议资讯 with a full snapshot (9PWZ3AVK). The page says "More information coming soon";
+         saving it again later adds a dated snapshot to the same item.
+```
+
+## Why this one?
+
+| | Claude Bridge for Zotero | Typical Zotero MCP servers |
+|---|---|---|
+| API key / zotero.org account | **Not needed** | Needed for writing (Zotero Web API) |
+| Extra server to install (Python/Node) | **None.** The server runs inside Zotero | Usually yes |
+| Add papers | **By DOI / arXiv / ISBN / PMID / title / URL**, using Zotero's own translators, with PDF and duplicate check | Often limited or Web-API only |
+| Web pages | **Full snapshots**, as with the browser connector | Rarely |
+| Read PDFs, highlights and notes | Yes, plus export to a local Markdown knowledge base | Varies |
+| Ready-made workflows | **`/zotero` skill**: push · save · sort · read · review · ask · cite · check | Tools only |
+| Deletes anything? | **Never** | Varies |
 
 ## How it works
 
@@ -23,12 +55,12 @@ There are two parts:
 
 | Part | Where it runs | What it does |
 |---|---|---|
-| **Zotero plugin** (`.xpi`) | inside Zotero | the MCP server and its tools |
-| **Claude Code plugin** `zotero` | in Claude Code | the `/zotero` skill (push · sort · read · review · ask · cite · check) and the MCP connection |
+| **Zotero plugin** (`.xpi`) | inside Zotero | the MCP server and its 23 tools |
+| **Claude Code plugin** `zotero` | in Claude Code | the [`/zotero` skill](claude-plugin/skills/zotero/SKILL.md) and the MCP connection |
 
-## Install
+## Quick start
 
-**1. Zotero plugin.** Download `zotero-claude-bridge-x.y.z.xpi` from [Releases](https://github.com/ChanglinWu/zotero-claude-bridge/releases). In Zotero 7 or later, open **Tools → Plugins**, then drag the `.xpi` onto that window, or use ⚙ → *Install Plugin From File…*. If nothing happens, use [scripts/install_via_run_javascript.js](scripts/install_via_run_javascript.js) in *Tools → Developer → Run JavaScript*.
+**1. Zotero plugin.** Download the `.xpi` from the [latest release](https://github.com/ChanglinWu/zotero-claude-bridge/releases/latest). In Zotero 7 or later, open **Tools → Plugins** and drag the `.xpi` onto that window, or use ⚙ → *Install Plugin From File…*. It updates itself from GitHub after that. If drag-and-drop does nothing, use [scripts/install_via_run_javascript.js](scripts/install_via_run_javascript.js) in *Tools → Developer → Run JavaScript*.
 
 **2. Claude Code plugin.** In Claude Code:
 
@@ -43,11 +75,9 @@ claude plugin marketplace add ChanglinWu/zotero-claude-bridge
 claude plugin install zotero@zotero-claude-bridge
 ```
 
-This adds the `/zotero` skill and connects the Zotero MCP server. Start a new session afterwards. Zotero has to be running while you use it.
+Start a new session and try `/zotero check`. Zotero has to be running while you use it.
 
-*MCP only, without the skill:* `claude mcp add --transport http --scope user zotero http://127.0.0.1:23119/claude-bridge/mcp`
-
-Check that it works: `curl http://127.0.0.1:23119/claude-bridge/info`, or run `python3 scripts/smoke_test.py`.
+Check the connection: `curl http://127.0.0.1:23119/claude-bridge/info`, or run `python3 scripts/smoke_test.py`.
 
 ## The `/zotero` skill
 
@@ -63,6 +93,24 @@ Check that it works: `curl http://127.0.0.1:23119/claude-bridge/info`, or run `p
 | `/zotero check` | Reports library health: duplicates, missing PDFs, unfiled items. |
 
 Writing `@zotero …` or asking in plain words ("push this paper to Zotero", "整理我的 Zotero") also triggers the skill.
+
+### Use the skill on its own
+
+The skill is a single file, [`claude-plugin/skills/zotero/SKILL.md`](claude-plugin/skills/zotero/SKILL.md). Read it, fork it, or adapt it to your own workflow. To use it without the Claude Code plugin, for example with a different setup or in your own skills folder:
+
+```bash
+mkdir -p ~/.claude/skills/zotero
+curl -L https://raw.githubusercontent.com/ChanglinWu/zotero-claude-bridge/main/claude-plugin/skills/zotero/SKILL.md -o ~/.claude/skills/zotero/SKILL.md
+claude mcp add --transport http --scope user zotero http://127.0.0.1:23119/claude-bridge/mcp
+```
+
+The skill needs the Zotero plugin (step 1 of the quick start) for its tools. Personal preferences belong in your own `~/.claude/CLAUDE.md`, not in the skill, for example:
+
+```markdown
+# Zotero
+- Default collection for `/zotero push`: `Inbox`.
+- Conference information (registration pages, calls for papers, deadlines) goes in `Conferences`.
+```
 
 > Claude Desktop (chat) only supports stdio servers. If you want it there too, add
 > `{"command": "npx", "args": ["mcp-remote", "http://127.0.0.1:23119/claude-bridge/mcp"]}` to `claude_desktop_config.json`.
@@ -145,6 +193,8 @@ The source is plain JavaScript with no build step: `bootstrap.js` and `src/bridg
 - `/zotero check`：检查文献库，包括重复条目、缺 PDF 的条目和未分类的条目。
 
 在对话里写 `@zotero …`，或直接说「推送到 Zotero」「整理我的 Zotero」，也能触发这个 skill。
+
+**单独使用 skill**：skill 只有一个文件 [`SKILL.md`](claude-plugin/skills/zotero/SKILL.md)，欢迎阅读、fork 或改成适合你自己的工作流。不装 Claude Code 插件也能用：把它放到 `~/.claude/skills/zotero/`，再用 `claude mcp add` 连接 Zotero（命令见上方英文部分）。个人偏好，比如默认分类，写在你自己的 `~/.claude/CLAUDE.md` 里。
 
 **能做什么**：检索文献库（包括 PDF 全文）、读取元数据、全文和 PDF 高亮批注；用 DOI、arXiv、ISBN 或 PMID 一键入库，自动补全元数据、尝试下载开放获取的 PDF、自动查重、归档到指定分类（没有就新建）并打标签；写笔记；导出 BibTeX 或任意 CSL 格式的参考文献。插件**不会删除**任何东西。
 
