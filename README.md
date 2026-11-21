@@ -55,7 +55,7 @@ There are two parts:
 
 | Part | Where it runs | What it does |
 |---|---|---|
-| **Zotero plugin** (`.xpi`) | inside Zotero | the MCP server and its 23 tools |
+| **Zotero plugin** (`.xpi`) | inside Zotero | the MCP server and its 25 tools |
 | **Claude Code plugin** `zotero` | in Claude Code | the [`/zotero` skill](claude-plugin/skills/zotero/SKILL.md) and the MCP connection |
 
 ## Quick start
@@ -154,6 +154,8 @@ The skill needs the Zotero plugin (step 1 of the quick start) for its tools. Per
 | `export_markdown` | Writes items as Markdown (with full text, annotations and images) into a local folder, so a large library doesn't have to pass through the chat |
 | `find_pdf` | Find and attach an open-access PDF for existing items |
 | `save_webpage` | Save a web page with a full snapshot, using a hidden browser and Zotero's site translators, either as a new item or as a fresh snapshot of an existing one |
+| `attach_file` | Attach local files (PDF, EPUB, anything) to an existing item, either as a stored copy or as a linked file; files already attached are skipped |
+| `get_job` | Get the result of a call that ran longer than 45 s (large imports keep running in Zotero) |
 | `select_in_zotero` | Show an item in the Zotero window |
 
 The plugin never deletes or trashes anything.

@@ -11,7 +11,8 @@ user's own Zotero app (no API key; its tools never delete anything). Its tools a
 `get_fulltext`, `get_annotations`, `list_collections`, `get_collection_items`, `recent_items`,
 `get_selected_items`, `library_overview`, `find_duplicates`, `export_citations`, `export_markdown`,
 `add_by_identifier`, `add_item`, `update_item`, `add_note`, `create_collection`, `add_to_collection`,
-`remove_from_collection`, `find_pdf`, `save_webpage`, `select_in_zotero`. They are available directly in
+`remove_from_collection`, `find_pdf`, `save_webpage`, `attach_file`, `get_job`, `select_in_zotero`. They are
+available directly in
 **Claude Code** (CLI or the desktop app's Code tab). See "Where this skill works" below for chat.
 
 Request: `$ARGUMENTS`
@@ -64,6 +65,8 @@ Do not suggest turning the mailbox on unless the user asks how to do more in cha
 - Reorganising (moving items, removing them from collections, bulk tagging) needs the user's OK on a
   shown plan first. Adding papers they asked for and creating new collections do not.
 - Duplicates are reported, never merged: merging is done by the user in Zotero's "Duplicate Items" view.
+- A call that runs longer than ~45 s returns `{"status": "running", "job_id": …}` and keeps working in Zotero:
+  call `get_job` with that id (repeat until `status` is `done` or `failed`) instead of calling the tool again.
 
 ## push — save papers to Zotero
 
@@ -182,6 +185,9 @@ answer citing item keys and pages. Say clearly when the library does not cover s
   for unfiled items.
 - `note <item> <text>` / "save this summary to Zotero": `add_note` (Markdown) on the item, or as a
   standalone note in a collection.
+- `attach <item> <files>`: `attach_file` with absolute paths (inside the home folder). `mode: "import"`
+  (default) stores a copy in Zotero, `"link"` links the file in place. Files already attached (same content)
+  are reported as `existing`. Split very large batches over several calls.
 - `open <item>`: `select_in_zotero`.
 - `snapshot <item> [url]`: `save_webpage` with `parent_key` to attach a fresh snapshot to an existing item.
 - `recent`: `recent_items`.

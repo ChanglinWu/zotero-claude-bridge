@@ -327,7 +327,58 @@ https://github.com/ChanglinWu/zotero-claude-bridge
     }
   };
 
+  // Calls that take longer than JOB_WAIT_MS return a job id and keep running in Zotero;
+  // get_job collects the result. Keeps clients from timing out on big imports.
+  const JOB_WAIT_MS = 45000;
+  const jobs = new Map(); // id -> { tool, started, done, result }
+
   async function callTool({ name, arguments: args }) {
+    if (name === "get_job") return runTool({ name, arguments: args });
+    const job = { tool: name, started: new Date().toISOString(), done: false, result: null };
+    const promise = runTool({ name, arguments: args }).then((r) => {
+      job.done = true;
+      job.finished = new Date().toISOString();
+      job.result = r;
+      return r;
+    });
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeoutCompat(() => resolve(null), JOB_WAIT_MS);
+    });
+    const first = await Promise.race([promise, late]);
+    clearTimeoutCompat(timer);
+    if (first) return first;
+    const id = "job-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+    jobs.set(id, job);
+    // forget finished jobs after an hour
+    for (const [k, j] of jobs) {
+      if (j.done && Date.now() - Date.parse(j.finished) > 3600000) jobs.delete(k);
+    }
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          status: "running",
+          job_id: id,
+          tool: name,
+          message: `Still working in Zotero (over ${JOB_WAIT_MS / 1000} s). Call get_job with this job_id ` +
+            "to get the result; it keeps running even if you do other things meanwhile.",
+        }, null, 1),
+      }],
+    };
+  }
+
+  function setTimeoutCompat(fn, ms) {
+    const t = Components.classes["@mozilla.org/timer;1"].createInstance(Components.interfaces.nsITimer);
+    t.initWithCallback({ notify: fn }, ms, Components.interfaces.nsITimer.TYPE_ONE_SHOT);
+    return t;
+  }
+
+  function clearTimeoutCompat(t) {
+    if (t) t.cancel();
+  }
+
+  async function runTool({ name, arguments: args }) {
     const tool = TOOLS.find((t) => t.name === name);
     if (!tool) {
       return toolError("Unknown tool: " + name);
@@ -625,6 +676,20 @@ https://github.com/ChanglinWu/zotero-claude-bridge
       .filter((i) => i.id !== item.id && i.isRegularItem() && norm(field(i, "title")) === title &&
         (!y || !year(i) || year(i) === y))
       .map((i) => i.key);
+  }
+
+  function homeDir() {
+    const svc = typeof Services !== "undefined" ? Services : Zotero.getMainWindow().Services;
+    return svc.dirsvc.get("Home", Components.interfaces.nsIFile).path;
+  }
+
+  async function fileInfo(path) {
+    const st = await io().stat(path);
+    return { size: st.size, type: st.type };
+  }
+
+  async function md5(path) {
+    return Zotero.Utilities.Internal.md5Async(Zotero.File.pathToFile(path));
   }
 
   function hasFileAttachment(item) {
@@ -1884,6 +1949,150 @@ https://github.com/ChanglinWu/zotero-claude-bridge
         } finally {
           browser.destroy();
         }
+      },
+    },
+    {
+      name: "get_job",
+      title: "Result of a long-running call",
+      description:
+        "Calls that take longer than 45 s (big imports, many identifiers, large files) return " +
+        "{status: 'running', job_id}. Call this with the job_id to get the result; it waits up to " +
+        "wait_seconds (default 30) for the job to finish.",
+      annotations: READ,
+      inputSchema: {
+        type: "object",
+        required: ["job_id"],
+        properties: {
+          job_id: { type: "string" },
+          wait_seconds: { type: "integer", default: 30, description: "0–40" },
+        },
+      },
+      async run(a) {
+        const job = jobs.get(String(a.job_id || ""));
+        if (!job) throw new Error("Unknown or expired job_id: " + a.job_id);
+        const deadline = Date.now() + Math.min(Math.max(a.wait_seconds ?? 30, 0), 40) * 1000;
+        while (!job.done && Date.now() < deadline) await Zotero.Promise.delay(500);
+        if (!job.done) {
+          return { status: "running", job_id: a.job_id, tool: job.tool, started: job.started };
+        }
+        const text = (job.result.content || []).map((c) => c.text).join("\n");
+        let result;
+        try {
+          result = JSON.parse(text);
+        } catch (e) {
+          result = text;
+        }
+        return { status: job.result.isError ? "failed" : "done", job_id: a.job_id, tool: job.tool, finished: job.finished, result };
+      },
+    },
+    {
+      name: "attach_file",
+      title: "Attach local files to an item",
+      description:
+        "Attach local files (PDF, EPUB, or any other type) to an existing item. mode 'import' (default) stores " +
+        "a copy in Zotero storage; 'link' links to the file where it is, without copying. Paths must be " +
+        "absolute and inside the user's home folder. A file already attached to the same item (same size and " +
+        "content) is reported as 'existing', not added again. Zotero indexes new files for full-text search " +
+        "in the background. Large batches may return a job_id: use get_job.",
+      annotations: ADD,
+      write: true,
+      inputSchema: {
+        type: "object",
+        required: ["parent_key"],
+        properties: {
+          parent_key: { type: "string", description: "Key of the item to attach to (a regular item, e.g. a book)" },
+          path: { type: "string", description: "Absolute path of one file" },
+          paths: { type: "array", items: { type: "string" }, description: "Absolute paths of several files" },
+          title: { type: "string", description: "Attachment title (single file only; default: file name)" },
+          mode: { type: "string", enum: ["import", "link"], default: "import" },
+          ...LIB,
+        },
+      },
+      async run(a) {
+        const parent = await getItemByKey(getLibraryID(a), a.parent_key);
+        if (!parent.isRegularItem()) throw new Error("parent_key must be a regular item (not a note or attachment)");
+        assertEditable(parent.libraryID);
+        const mode = a.mode === "link" ? "link" : "import";
+        const paths = [].concat(a.paths || [], a.path || []).map((p) => String(p).trim()).filter(Boolean);
+        if (!paths.length) throw new Error("Give path or paths");
+        const home = homeDir();
+
+        // What is already attached: size -> [{key, path}]
+        const existing = [];
+        for (const id of parent.getAttachments()) {
+          const att = Zotero.Items.get(id);
+          if (!att || att.deleted || !att.isFileAttachment()) continue;
+          const p = await att.getFilePathAsync();
+          if (!p) continue;
+          try {
+            existing.push({ key: att.key, path: p, size: (await fileInfo(p)).size, att });
+          } catch (e) { /* file missing */ }
+        }
+
+        const results = [];
+        const added = [];
+        for (const raw of paths) {
+          const r = { path: raw };
+          try {
+            if (!raw.startsWith("/") && !/^[A-Za-z]:\\/.test(raw)) throw new Error("path must be absolute");
+            const path = pu().normalize(raw);
+            if (!(path === home || path.startsWith(home + "/") || path.startsWith(home + "\\"))) {
+              throw new Error("path must be inside the home folder " + home);
+            }
+            if (!(await io().exists(path))) throw new Error("file not found");
+            const info = await fileInfo(path);
+            if (info.type !== "regular") throw new Error("not a regular file");
+            r.size = info.size;
+
+            const sameSize = existing.filter((e) => e.size === info.size);
+            let dup = null;
+            if (sameSize.length) {
+              const hash = await md5(path);
+              for (const e of sameSize) {
+                if (e.path === path || (await md5(e.path)) === hash) {
+                  dup = e;
+                  break;
+                }
+              }
+            }
+            if (dup) {
+              Object.assign(r, { status: "existing", key: dup.key, contentType: dup.att.attachmentContentType });
+              results.push(r);
+              continue;
+            }
+
+            const title = paths.length === 1 && a.title ? a.title
+              : pu().filename(path).replace(/\.[^.]+$/, "");
+            const att = mode === "link"
+              ? await Zotero.Attachments.linkFromFile({ file: path, parentItemID: parent.id, title })
+              : await Zotero.Attachments.importFromFile({ file: path, parentItemID: parent.id, title });
+            existing.push({ key: att.key, path: await att.getFilePathAsync(), size: info.size, att });
+            added.push(att);
+            Object.assign(r, { status: "added", mode, key: att.key, title, contentType: att.attachmentContentType });
+          } catch (e) {
+            Object.assign(r, { status: "failed", error: String(e && e.message || e) });
+          }
+          results.push(r);
+        }
+
+        // Full-text: report what is already indexed, index the rest in the background
+        for (const r of results) {
+          if (r.status !== "added") continue;
+          const att = added.find((x) => x.key === r.key);
+          const cache = Zotero.FullText.getItemCacheFile(att);
+          r.indexedChars = cache.exists() ? (await Zotero.File.getContentsAsync(cache.path)).length : "pending";
+        }
+        const toIndex = added.filter((att) => !Zotero.FullText.getItemCacheFile(att).exists()).map((att) => att.id);
+        if (toIndex.length) {
+          Zotero.FullText.indexItems(toIndex, { complete: true }).catch((e) => Zotero.debug("[Claude Bridge] index: " + e));
+        }
+        return {
+          parent: { key: parent.key, title: field(parent, "title") },
+          added: results.filter((r) => r.status === "added").length,
+          existing: results.filter((r) => r.status === "existing").length,
+          failed: results.filter((r) => r.status === "failed").length,
+          files: results,
+        };
       },
     },
     {
