@@ -11,49 +11,46 @@ user's own Zotero app (no API key; its tools never delete anything). Its tools a
 `get_fulltext`, `get_annotations`, `list_collections`, `get_collection_items`, `recent_items`,
 `get_selected_items`, `library_overview`, `find_duplicates`, `export_citations`, `export_markdown`,
 `add_by_identifier`, `add_item`, `update_item`, `add_note`, `create_collection`, `add_to_collection`,
-`remove_from_collection`, `find_pdf`, `save_webpage`, `select_in_zotero`. Reach them in one of two ways (see
-"How to call the Zotero tools" below): directly, when they are available as tools here (Claude Code), or through
-the plugin's **folder mailbox** (Claude Desktop chat and anywhere else that can read and write files).
+`remove_from_collection`, `find_pdf`, `save_webpage`, `select_in_zotero`. They are available directly in
+**Claude Code** (CLI or the desktop app's Code tab). See "Where this skill works" below for chat.
 
 Request: `$ARGUMENTS`
 
 Read the first word of the request as the subcommand. If there is none, infer it from the request
 (a paper title → push; a web page URL or "this page" → save; a question → ask). With no request at all, briefly list the subcommands.
 
-## How to call the Zotero tools
+## Where this skill works
 
-**Never operate Zotero through screen control, computer use or by clicking its UI**, and never edit
-`zotero.sqlite`. If neither way below works, stop and tell the user what to set up.
+**Never operate Zotero through screen control, computer use or by clicking its UI**, never edit
+`zotero.sqlite`, and never script around missing tools with ad-hoc HTTP calls.
 
-**1. Direct tools.** If tools ending in `search_items`, `add_by_identifier` … are available here, call them.
+**Claude Code (full use).** If tools ending in `search_items`, `add_by_identifier` … are available, call them
+directly. Everything below (push, save, sort, read, review, ask, cite, check) works here.
+If they are missing: Zotero must be running with the **Claude Bridge for Zotero** plugin (Zotero → Tools →
+Plugins → drag in the .xpi from https://github.com/ChanglinWu/zotero-claude-bridge/releases); then start a new
+session or reconnect with `/mcp`. Check with `curl -s http://127.0.0.1:23119/claude-bridge/info`
+(connection refused → Zotero is not running; `No endpoint found` → the Zotero plugin is not installed).
 
-**2. Folder mailbox (no MCP).** Otherwise use the mailbox in the Zotero data directory, normally `~/Zotero`
-(on Windows `%USERPROFILE%\Zotero`):
+**Chat mode (Claude Desktop chat, claude.ai): search only.** If the Zotero tools are not available here, say
+so once, in one sentence: *in chat mode Claude cannot save to Zotero or work with the library interactively as
+it does in Claude Code; chat is recommended only for searching the literature.* Then:
+- search for papers (web search), and present the results with title, authors, year, venue and DOI/arXiv
+  link, so the user can pick;
+- to save them, tell the user to run `/zotero push <names or DOIs>` in Claude Code (the desktop app's Code tab),
+  and give the exact command with the identifiers you found;
+- do not ask for folder access, do not use screen control, and do not attempt push, save, sort, notes or any
+  other change to the library from chat.
 
-- Check `~/Zotero/claude-bridge/status.json`. Its `updated` time is refreshed every few seconds while Zotero runs.
-  - File or folder not found → if you cannot access `~/Zotero` at all, ask the user to give this chat access to
-    their Zotero folder (`~/Zotero`); if the folder is there but `claude-bridge/` is not, the plugin is missing.
-  - `updated` more than ~30 s old → Zotero is not running: ask the user to start it.
-- For each call, write a request file `~/Zotero/claude-bridge/inbox/<id>.json`, where `<id>` is new and unique
-  (letters, digits, `-`, `_`), e.g. `push-20261121-01`:
-  `{"id": "push-20261121-01", "tool": "add_by_identifier", "arguments": {"identifiers": ["10.1038/…"], "collection": "cc"}}`
-- The answer appears as `~/Zotero/claude-bridge/outbox/<id>.json`:
-  `{"id": …, "tool": …, "ok": true|false, "result": <JSON> | "text": "<message>"}`. Read tools answer in about a
-  second; `add_by_identifier`, `save_webpage` and `find_pdf` can take up to a minute. Wait a few seconds between
-  reads (e.g. `sleep 3` if a shell is available); calls are processed one at a time, in order.
-- `{"id": "tools-1", "tool": "list_tools"}` returns every tool with its parameters (the same as listed in this skill).
-- Each call is a separate file: batch work by giving one call several keys or identifiers where the tool allows it.
-
-Zotero must be running with the **Claude Bridge for Zotero** plugin (Zotero → Tools → Plugins → drag in the .xpi
-from https://github.com/ChanglinWu/zotero-claude-bridge/releases). claude.ai in a browser cannot reach the
-user's computer at all; suggest the Claude desktop app.
-
-### In chat
-
-Claude Desktop chat usually has no shell on the user's computer and only the folders the user shared, so:
-- push: find DOIs/arXiv IDs with web search instead of `curl` to Crossref/arXiv.
-- read/review: `export_markdown` into a folder this chat can open (e.g. `~/Zotero/claude-bridge/kb/<topic>`,
-  absolute path), then read the files; otherwise read the needed text with `get_fulltext` (paged with `offset`).
+**Optional folder mailbox (advanced, off by default).** Only if the user has turned it on themselves (Zotero →
+Settings → Advanced → Config Editor → `extensions.zotero-claude-bridge.mailbox` = true) and this chat can open
+`~/Zotero/claude-bridge` (ask for access to that folder only, never the whole `~/Zotero`):
+- `~/Zotero/claude-bridge/status.json` exists and its `updated` time is less than ~2 minutes old → mailbox on.
+- For each call write `~/Zotero/claude-bridge/inbox/<id>.json` with a new unique `<id>` (letters, digits, `-`,
+  `_`): `{"id": "push-01", "tool": "add_by_identifier", "arguments": {"identifiers": ["10.1038/…"], "collection": "cc"}}`.
+- Read the answer from `~/Zotero/claude-bridge/outbox/<id>.json` (`{"ok": …, "result" | "text": …}`); it
+  takes a few seconds, up to a minute for adding papers or saving pages. Calls run one at a time.
+- `export_markdown` through the mailbox can only write inside `~/Zotero/claude-bridge/` (e.g. `…/kb/<topic>`).
+Do not suggest turning the mailbox on unless the user asks how to do more in chat.
 
 ## General rules
 

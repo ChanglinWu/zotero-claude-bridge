@@ -15,6 +15,7 @@ Zotero.ClaudeBridge = new function () {
   const ENDPOINT = "/claude-bridge/mcp";
   const INFO_ENDPOINT = "/claude-bridge/info";
   const PREF_READONLY = "extensions.zotero-claude-bridge.readOnly";
+  const PREF_MAILBOX = "extensions.zotero-claude-bridge.mailbox";
   const SERVER_NAME = "zotero";
   const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
   const MAX_TEXT = 200000;
@@ -60,12 +61,16 @@ Zotero.ClaudeBridge = new function () {
     };
     Zotero.Server.Endpoints[INFO_ENDPOINT] = InfoEndpoint;
 
-    startMailbox().catch((e) => Zotero.logError(e));
+    // Folder mailbox: off by default, follows the pref live (Config Editor)
+    mailboxObserver = Zotero.Prefs.registerObserver(PREF_MAILBOX, () => syncMailbox(), true);
+    syncMailbox();
   };
 
   this.shutdown = function () {
     delete Zotero.Server.Endpoints[ENDPOINT];
     delete Zotero.Server.Endpoints[INFO_ENDPOINT];
+    if (mailboxObserver) Zotero.Prefs.unregisterObserver(mailboxObserver);
+    mailboxObserver = null;
     mailboxRunning = false;
   };
 
@@ -79,12 +84,33 @@ Zotero.ClaudeBridge = new function () {
   //
   // Lets Claude use the tools from anywhere that can read and write files in the
   // Zotero data directory, e.g. Claude Desktop chat with access to that folder.
+  // OFF by default (extensions.zotero-claude-bridge.mailbox). While off, the plugin
+  // never touches the folder. While on, it checks inbox/ every 1.5 s, writes a
+  // heartbeat every 30 s, and export_markdown may only write inside the folder.
   // ---------------------------------------------------------------------------
 
   let mailboxRunning = false;
+  let mailboxGeneration = 0;
+  let mailboxObserver = null;
+
+  function mailboxBase() {
+    return pu().join(Zotero.DataDirectory.dir, "claude-bridge");
+  }
+
+  function syncMailbox() {
+    const on = !!Zotero.Prefs.get(PREF_MAILBOX, true);
+    if (on && !mailboxRunning) {
+      startMailbox().catch((e) => Zotero.logError(e));
+    } else if (!on && mailboxRunning) {
+      mailboxRunning = false;
+      // Let clients see at once that the mailbox is closed
+      io().remove(pu().join(mailboxBase(), "status.json"), { ignoreAbsent: true }).catch(() => {});
+    }
+  }
 
   async function startMailbox() {
-    const base = pu().join(Zotero.DataDirectory.dir, "claude-bridge");
+    const gen = ++mailboxGeneration;
+    const base = mailboxBase();
     const inbox = pu().join(base, "inbox");
     const outbox = pu().join(base, "outbox");
     await io().makeDirectory(inbox, { createAncestors: true, ignoreExisting: true });
@@ -94,10 +120,10 @@ Zotero.ClaudeBridge = new function () {
     let lastBeat = 0;
     let lastCleanup = 0;
     const pending = new Map(); // unreadable request file -> first seen
-    while (mailboxRunning) {
+    while (mailboxRunning && gen === mailboxGeneration) {
       try {
         const now = Date.now();
-        if (now - lastBeat > 5000) {
+        if (now - lastBeat > 30000) {
           lastBeat = now;
           await writeAtomic(pu().join(base, "status.json"), JSON.stringify({
             plugin: "zotero-claude-bridge",
@@ -119,13 +145,13 @@ Zotero.ClaudeBridge = new function () {
           .filter((f) => f.endsWith(".json"))
           .sort();
         for (const file of files) {
-          if (!mailboxRunning) break;
+          if (!mailboxRunning || gen !== mailboxGeneration) break;
           await handleMailboxFile(file, outbox, pending);
         }
       } catch (e) {
         Zotero.debug("[Claude Bridge] mailbox: " + e);
       }
-      await Zotero.Promise.delay(700);
+      await Zotero.Promise.delay(1500);
     }
   }
 
@@ -157,7 +183,18 @@ Zotero.ClaudeBridge = new function () {
         name, description, write: !!write, parameters: inputSchema,
       }));
     } else {
-      const r = await callTool({ name: req.tool, arguments: req.arguments || {} });
+      const args = req.arguments || {};
+      // Requests from the mailbox may only export inside the mailbox folder
+      const base = mailboxBase();
+      let blocked = null;
+      if (req.tool === "export_markdown") {
+        const folder = pu().normalize(String(args.folder || ""));
+        if (!(folder === base || folder.startsWith(base + "/") || folder.startsWith(base + "\\"))) {
+          blocked = `Through the mailbox, export_markdown can only write inside ${base} ` +
+            `(for example ${pu().join(base, "kb", "my-topic")}).`;
+        }
+      }
+      const r = blocked ? toolError(blocked) : await callTool({ name: req.tool, arguments: args });
       const text = (r.content || []).map((c) => c.text).join("\n");
       out.ok = !r.isError;
       try {
@@ -187,7 +224,10 @@ Zotero library without any MCP server or API key.
 - The answer appears in outbox/<id>.json within a second or two (adding papers can take ~30 s):
     {"id": "abc123", "tool": "search_items", "ok": true, "result": {...}}
 - {"id": "...", "tool": "list_tools"} lists every tool and its parameters.
-- status.json is refreshed every few seconds while Zotero is running.
+- status.json is refreshed every 30 seconds while the mailbox is on.
+- The mailbox is off by default. Turn it on or off in Zotero: Settings → Advanced → Config Editor →
+  extensions.zotero-claude-bridge.mailbox. While it is off, Zotero does not look at this folder.
+- Through the mailbox, export_markdown can only write inside this folder.
 
 Nothing here is ever deleted from your library: the tools only read and add.
 Answers older than one day are removed from outbox/ automatically.
